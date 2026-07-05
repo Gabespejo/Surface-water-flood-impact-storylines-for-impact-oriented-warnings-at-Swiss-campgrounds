@@ -140,56 +140,6 @@ def generate_buffered_buildings_for_one_campground(
 import matplotlib.pyplot as plt
 import geopandas as gpd
 
-def plot_intersections_with_grid(
-    buffer_gdf, 
-    camp_polygon_path, 
-    polygon_column_name, 
-    polygon_name, 
-    buildings_path,
-    x_coords, 
-    y_coords, 
-    cell_index
-):
-    """
-    Visualizes:
-    - Original buildings (blue)
-    - Buffered buildings (red)
-    - Intersected hazard grid points (tiny transparent blue)
-    - Campground polygon (black)
-    """
-
-    # Load campground polygon
-    camp_gdf = gpd.read_file(camp_polygon_path)
-    selected_camp = camp_gdf[camp_gdf[polygon_column_name] == polygon_name]
-
-    # Load original building footprints
-    buildings_gdf = gpd.read_file(buildings_path)
-    buildings_in_camp = buildings_gdf[buildings_gdf.within(selected_camp.iloc[0].geometry)]
-
-    # Extract intersected grid points
-    points_x = [x_coords[i] for i in cell_index]
-    points_y = [y_coords[i] for i in cell_index]
-
-    # Plotting
-    fig, ax = plt.subplots(figsize=(10, 10))
-    selected_camp.boundary.plot(ax=ax, color='black', linewidth=1, label='Campground')
-    buildings_in_camp.plot(ax=ax, color='lightblue', edgecolor='blue', linewidth=0.7, label='Original Buildings')
-    buffer_gdf.boundary.plot(ax=ax, color='red', linewidth=1, label='Buffered Building')
-    ax.scatter(points_x, points_y, s=2, color='blue', alpha=0.4, label='Intersected Grid Points')
-
-    ax.set_title(f"Grid Intersection with Buffered Buildings\n{polygon_name}")
-    ax.set_xlabel("Easting (m)")
-    ax.set_ylabel("Northing (m)")
-    ax.legend()
-    ax.set_aspect('equal')
-    plt.grid(True)
-    plt.show()
-
-########################################################################################################
-
-import matplotlib.pyplot as plt
-import geopandas as gpd
-
 def plot_intersections_with_grid_id(
     buffer_gdf, 
     camp_polygon_path, 
@@ -265,6 +215,7 @@ def plot_intersections_with_grid_id(
     plt.tight_layout()
     plt.show()
 
+########################################################################################################
 ##########################################################################################################################
 
 #### Multiple Scenarios of the Flood Exposure  
@@ -374,3 +325,239 @@ def process_multiple_hazard_files(
         print(f"Finished {scenario}. Time: {str(datetime.datetime.now() - T_start)[:-4]}")
 
     return pd.concat(all_results, ignore_index=True)
+
+################################################################################################################
+###############################################################################################################
+def export_building_level_exposure_csv(
+    hazard_glob,
+    buildings_path,
+    campgrounds_path,
+    polygon_column,
+    camp_names,
+    out_csv,
+    id_column="id_def",
+    buffer_m=2.0,
+    mean_thr=0.1,
+    max_thr=0.3,
+):
+    import os, glob, math
+    import numpy as np
+    import pandas as pd
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    def read_ascii_max(path):
+        with open(path) as f:
+            ncols = int(f.readline().split()[1])
+            nrows = int(f.readline().split()[1])
+            xll = float(f.readline().split()[1])
+            yll = float(f.readline().split()[1])
+            dx = float(f.readline().split()[1])
+            nodata = float(f.readline().split()[1])
+            data = np.fromstring(" ".join(ln.strip() for ln in f.readlines()), sep=" ")
+        Z = data.reshape((nrows, ncols))
+        return ncols, nrows, xll, yll, dx, nodata, Z
+
+    def iterate_indices(bbox, ncols, nrows, xll, yll, dx):
+        minx, miny, maxx, maxy = bbox
+        c_min = max(0, min(int((minx - xll)//dx), ncols-1))
+        c_max = max(0, min(int((maxx - xll)//dx), ncols-1))
+        r_min = max(0, min(int(nrows-1-(maxy-yll)//dx), nrows-1))
+        r_max = max(0, min(int(nrows-1-(miny-yll)//dx), nrows-1))
+        return r_min, r_max, c_min, c_max
+
+    def classify(df):
+        df = df.copy()
+        df["class"] = "Low"
+        df.loc[(df["mean_depth"] < mean_thr) & (df["max_depth"] >= max_thr), "class"] = "Medium"
+        df.loc[(df["mean_depth"] >= mean_thr) & (df["max_depth"] < max_thr), "class"] = "Medium"
+        df.loc[(df["mean_depth"] >= mean_thr) & (df["max_depth"] >= max_thr), "class"] = "High"
+        df["internally_flooded"] = df["class"].eq("High")
+        return df
+
+    if isinstance(camp_names, str):
+        camp_names = [camp_names]
+
+    hazards = sorted(glob.glob(hazard_glob, recursive=True))
+    if not hazards:
+        raise ValueError("No hazard files found.")
+
+    bldg = gpd.read_file(buildings_path)
+    camps = gpd.read_file(campgrounds_path)
+
+    if camps.crs != bldg.crs:
+        camps = camps.to_crs(bldg.crs)
+
+    camps_sel = camps[camps[polygon_column].isin(camp_names)]
+    if camps_sel.empty:
+        raise ValueError("No campgrounds matched camp_names.")
+
+    rows = []
+
+    for hp in hazards:
+        # scenario from filename: ..._75.max -> 75
+        scenario = int(os.path.basename(hp).split("_")[-1].replace(".max", ""))
+        ncols, nrows, xll, yll, dx, nodata, Z = read_ascii_max(hp)
+
+        for _, camp in camps_sel.iterrows():
+            camp_name = camp[polygon_column]
+            b_in = bldg[bldg.geometry.within(camp.geometry)].copy()
+            if b_in.empty:
+                continue
+
+            b_in["buffer"] = b_in.geometry.buffer(buffer_m)
+
+            for _, b in b_in.iterrows():
+                bid = b.get(id_column, b.name)
+                buf = b["buffer"]
+
+                r_min, r_max, c_min, c_max = iterate_indices(buf.bounds, ncols, nrows, xll, yll, dx)
+
+                depths = []
+                for r in range(r_min, r_max + 1):
+                    y = yll + (nrows - 1 - r) * dx
+                    for c in range(c_min, c_max + 1):
+                        x = xll + c * dx
+                        if buf.contains(Point(x, y)):
+                            d = Z[r, c]
+                            if d != nodata:
+                                depths.append(d)
+
+                rows.append({
+                    "campground": str(camp_name),
+                    "scenario": int(scenario),
+                    id_column: bid,
+                    "max_depth": float(np.max(depths)) if depths else 0.0,
+                    "mean_depth": float(np.mean(depths)) if depths else 0.0,
+                })
+
+    df = pd.DataFrame(rows)
+    df = classify(df)
+
+    # keep exactly what you want
+    df = df[["campground", "scenario", id_column, "max_depth", "mean_depth", "class", "internally_flooded"]]
+
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+    df.to_csv(out_csv, index=False)
+    return df
+
+
+################################################################################################################
+###############################################################################################################
+
+def plot_first_change_threshold(
+    df_nodisch,
+    df_disch,
+    camp_name,
+    id_column="id_def",
+    out_png=None,
+    show=True,
+    dpi=200,
+):
+    """
+    For each building:
+      - find the FIRST rainfall scenario where class(with discharge) != class(without)
+      - plot that scenario as the "change threshold"
+      - color shows direction:
+          red  = higher exposure with discharge
+          blue = lower exposure with discharge
+          grey = no change across all scenarios
+
+    Inputs must contain columns:
+      campground, scenario, id_column, class
+    """
+    import os
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    class_to_int = {"Low": 0, "Medium": 1, "High": 2}
+
+    # Filter to this campground
+    a = df_nodisch[df_nodisch["campground"] == camp_name].copy()
+    b = df_disch[df_disch["campground"] == camp_name].copy()
+    if a.empty or b.empty:
+        raise ValueError(f"No rows found for campground='{camp_name}' in one of the datasets.")
+
+    # Convert class to numeric and aggregate duplicates (worst-case)
+    a["num"] = a["class"].map(class_to_int).fillna(0).astype(int)
+    b["num"] = b["class"].map(class_to_int).fillna(0).astype(int)
+    a = a.groupby([id_column, "scenario"], as_index=False)["num"].max()
+    b = b.groupby([id_column, "scenario"], as_index=False)["num"].max()
+
+    # Pivot to building × scenario
+    A = a.pivot(index=id_column, columns="scenario", values="num")
+    B = b.pivot(index=id_column, columns="scenario", values="num")
+
+    # Align (union of buildings and scenarios), fill missing as Low (0)
+    idx = A.index.union(B.index)
+    cols = A.columns.union(B.columns)
+    A = A.reindex(index=idx, columns=cols).fillna(0)
+    B = B.reindex(index=idx, columns=cols).fillna(0)
+
+    # Sort scenarios numerically if possible
+    try:
+        cols_sorted = sorted(cols, key=int)
+    except Exception:
+        cols_sorted = sorted(cols)
+    A = A.reindex(cols_sorted, axis=1)
+    B = B.reindex(cols_sorted, axis=1)
+
+    # Compute first change threshold
+    thresholds = []
+    for bid in A.index:
+        diff = (B.loc[bid] - A.loc[bid]).astype(int)
+        changed = diff[diff != 0]
+        if len(changed) == 0:
+            thresholds.append((bid, np.nan, 0))  # no change
+        else:
+            first_scn = changed.index[0]
+            direction = int(np.sign(changed.iloc[0]))  # +1 higher exposure with discharge, -1 lower
+            thresholds.append((bid, float(first_scn), direction))
+
+    thr = pd.DataFrame(thresholds, columns=[id_column, "first_change_scenario", "direction"])
+
+    # Sort: earliest change first; no-change last
+    thr = thr.sort_values(["first_change_scenario", id_column], na_position="last").reset_index(drop=True)
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(10, max(4, 0.35 * max(6, len(thr)))))
+
+    y = np.arange(len(thr))
+    x = thr["first_change_scenario"].values
+
+    colors = np.where(
+        thr["direction"].values > 0, "#d7191c",    # red: higher exposure with discharge
+        np.where(thr["direction"].values < 0, "#2c7bb6", "#bdbdbd")  # blue / grey
+    )
+
+    ax.scatter(x, y, c=colors, s=50)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(thr[id_column].astype(str))
+    ax.set_xlabel("Rainfall scenario where discharge FIRST changes exposure class")
+    ax.set_title(f"Threshold where discharge starts to matter – {camp_name}")
+
+    if len(cols_sorted) <= 30:
+        ax.set_xticks(cols_sorted)
+
+    # annotate "no change"
+    if len(cols_sorted) > 0:
+        xmax = cols_sorted[-1]
+        for i, val in enumerate(x):
+            if np.isnan(val):
+                ax.text(xmax, i, "no change", va="center", ha="left", fontsize=9, color="#666666")
+
+    plt.tight_layout()
+
+    # Save / show control
+    if out_png:
+        os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+        fig.savefig(out_png, dpi=dpi)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return thr

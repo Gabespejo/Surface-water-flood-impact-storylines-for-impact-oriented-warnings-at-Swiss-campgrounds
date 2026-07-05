@@ -1114,26 +1114,20 @@ def g_plot_maxwd_swissTLM_nocatchment_zoomed(
     plot_output_folder,
     location_name,
     rain_intensity,
-    # Orange palette (0.10–0.30, 0.30–0.50, ≥0.50)
-    color1="#fee8c8",
-    color2="#fdbb84",
-    color3="#e34a33",
     use_catchments=False,
     geo_ezgg_2km_ge=None,
     extent=None,                # (xmin, xmax, ymin, ymax) in m (or km if 'auto')
     extent_units="auto",        # "auto" | "m" | "km"
     target_pixel_size=None,     # overlay render grid (m/px); None = DEM native
-    # Background controls (kept to your requested layer)
     bg_layer="ch.swisstopo.swisstlm3d-karte-grau",
-    bg_pixel_size=1.0,          # WMS background pixel size (m/px). 0.5–2.0 is a good range.
+    bg_pixel_size=1.0,
     bg_max_px=4096,
-    bg_dpi=192                  # try 96 for more default carto styling
+    bg_dpi=192
 ):
     """
-    Plots max water depth on high-res Swisstopo 'swisstlm3d-karte-grau'.
-    - Exact framing to `extent` with 1:1 metric aspect (no distortion).
-    - Tiled WMS (no server downscale) for a crisp background.
-    - Orange depth classes: 0.10–0.30, 0.30–0.50, ≥0.50 m.
+    Plots max water depth on Swisstopo gray map.
+    Palette: edges=[0.01,0.10,0.30,0.50,1.0,1.50,2.0], colors per user,
+    overflow ≥2.0 in #023858, values <0.01 transparent.
     """
     os.makedirs(plot_output_folder, exist_ok=True)
 
@@ -1145,14 +1139,12 @@ def g_plot_maxwd_swissTLM_nocatchment_zoomed(
             return xmin, xmax, ymin, ymax
         if units == "km":
             return xmin*1000.0, xmax*1000.0, ymin*1000.0, ymax*1000.0
-        # auto: if values are ~thousands, treat as km
         sample = max(abs(x) for x in (xmin, xmax, ymin, ymax))
         return (xmin*1000.0, xmax*1000.0, ymin*1000.0, ymax*1000.0) if sample < 10000 else (xmin, xmax, ymin, ymax)
 
-    # Keep the original requested extent for framing the plot & basemap
     plot_extent = _extent_to_meters(extent, extent_units) if extent is not None else None
 
-    # --- Open DEM and decide plotting window ---
+    # --- DEM & plotting window ---
     with rasterio.open(dem_file) as src_dem:
         dem_crs = src_dem.crs
         dem_nodata_value = src_dem.nodata if src_dem.nodata is not None else -9999
@@ -1162,7 +1154,6 @@ def g_plot_maxwd_swissTLM_nocatchment_zoomed(
             dsb = src_dem.bounds
             xmin_r = max(xmin, dsb.left);  xmax_r = min(xmax, dsb.right)
             ymin_r = max(ymin, dsb.bottom); ymax_r = min(ymax, dsb.top)
-
             win = from_bounds(xmin_r, ymin_r, xmax_r, ymax_r, transform=src_dem.transform)
             dem_data = src_dem.read(1, window=win)
             dem_transform = src_dem.window_transform(win)
@@ -1174,7 +1165,6 @@ def g_plot_maxwd_swissTLM_nocatchment_zoomed(
             dem_bounds = rasterio.coords.BoundingBox(b.left, b.bottom, b.right, b.top)
             plot_extent = (b.left, b.right, b.bottom, b.top)
 
-        # Optional render resampling (for overlay crispness)
         if target_pixel_size is not None and plot_extent is not None:
             from rasterio.transform import from_origin
             px = float(target_pixel_size)
@@ -1205,7 +1195,7 @@ def g_plot_maxwd_swissTLM_nocatchment_zoomed(
         import geopandas as gpd
         catchments = gpd.read_file(geo_ezgg_2km_ge).to_crs("EPSG:2056")
 
-    # --- Basemap for the EXACT plot extent (independent resolution) ---
+    # --- Basemap (you must provide get_swisstopo_background_image_zoomed) ---
     xmin, xmax, ymin, ymax = plot_extent
     px_bg = float(bg_pixel_size) if bg_pixel_size is not None else abs(dem_transform.a)
     bg_width  = int(np.ceil((xmax - xmin) / px_bg))
@@ -1214,7 +1204,7 @@ def g_plot_maxwd_swissTLM_nocatchment_zoomed(
     basemap_img = get_swisstopo_background_image_zoomed(
         xmin, xmax, ymin, ymax,
         width=bg_width, height=bg_height,
-        layer=bg_layer,        # stays as swisstlm3d-karte-grau
+        layer=bg_layer,
         max_px=bg_max_px,
         dpi=bg_dpi
     )
@@ -1222,92 +1212,364 @@ def g_plot_maxwd_swissTLM_nocatchment_zoomed(
         print("Failed to fetch Swisstopo WMS basemap.")
         return
 
-    # --- Align max depth to the render grid ---
-    try:
-        with rasterio.open(max_file) as src_max:
-            max_data = src_max.read(1)
-            max_transform = src_max.transform
-            max_crs = src_max.crs
+    # --- Align max depth to render grid ---
+    with rasterio.open(max_file) as src_max:
+        max_data = src_max.read(1)
+        max_transform = src_max.transform
+        max_crs = src_max.crs
 
-        aligned_data = np.full(dem_shape, np.nan, dtype=np.float32)
-        reproject(
-            source=max_data,
-            destination=aligned_data,
-            src_transform=max_transform,
-            src_crs=max_crs if max_crs is not None else "EPSG:2056",
-            dst_transform=dem_transform,
-            dst_crs=dem_crs if dem_crs is not None else "EPSG:2056",
-            resampling=Resampling.nearest,
+    aligned_data = np.full(dem_shape, np.nan, dtype=np.float32)
+    reproject(
+        source=max_data,
+        destination=aligned_data,
+        src_transform=max_transform,
+        src_crs=max_crs if max_crs is not None else "EPSG:2056",
+        dst_transform=dem_transform,
+        dst_crs=src_dem.crs if src_dem.crs is not None else "EPSG:2056",
+        resampling=Resampling.nearest,
+    )
+
+    # >= 0.01 only; below is transparent
+    masked_data = np.where((mask & (aligned_data >= 0.01)), aligned_data, np.nan)
+    has_depth = np.isfinite(masked_data).any()
+
+    # --- Fixed palette & ticks (your spec) ---
+    edges  = [0.01, 0.10, 0.30, 0.50, 1.0, 1.50, 2.0]
+    colors = ["#f7fcf0", "#ccebc5", "#a8ddb5", "#7bccc4", "#43a2ca", "#0868ac"]
+    cmap_disc = ListedColormap(colors + ["#023858"])   # overflow ≥2.0
+    cmap_disc.set_under((0, 0, 0, 0))                  # transparent under 0.01
+    norm = BoundaryNorm(edges, cmap_disc.N, clip=False)
+
+    # --- Figure (no axis labels) ---
+    xspan = xmax - xmin
+    yspan = ymax - ymin
+    base_width = 12.0
+    fig, ax = plt.subplots(figsize=(base_width, base_width * (yspan / xspan)))
+
+    ax.imshow(basemap_img, extent=plot_extent, interpolation="nearest", zorder=0)
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    ax.set_aspect("equal", adjustable="box")
+
+    if has_depth:
+        im = ax.imshow(
+            masked_data, cmap=cmap_disc, norm=norm,
+            extent=plot_extent, interpolation="none", zorder=2
         )
-
-        masked_data = np.where((mask & (aligned_data >= 0.10)), aligned_data, np.nan)
-        has_depth = np.isfinite(masked_data).any()
-
-        # --------- FIGURE: enforce 1:1 aspect in meters (no distortion) ---------
-        xspan = xmax - xmin
-        yspan = ymax - ymin
-        base_width = 12.0
-        fig, ax = plt.subplots(figsize=(base_width, base_width * (yspan / xspan)))
-
-        # basemap (choose 'nearest' for razor sharp, 'bilinear' to soften labels slightly)
-        ax.imshow(basemap_img, extent=plot_extent, interpolation="nearest", zorder=0)
-        ax.set_xlim(xmin, xmax)
-        ax.set_ylim(ymin, ymax)
-        ax.set_aspect("equal", adjustable="box")
-
-        if has_depth:
-            data_max = float(np.nanmax(masked_data))
-            vmax = max(0.5001, data_max)
-            boundaries = [0.10, 0.30, 0.50, vmax]
-            cmap = ListedColormap([color1, color2, color3])
-            norm = BoundaryNorm(boundaries, cmap.N, clip=True)
-
-            im = ax.imshow(
-                masked_data, cmap=cmap, norm=norm,
-                extent=plot_extent,
-                interpolation="none", zorder=2
-            )
-
-            if catchments is not None:
-                catchments.boundary.plot(ax=ax, edgecolor="black", linewidth=0.7,
-                                         zorder=3, label="Catchment Boundary")
-
-            cbar = plt.colorbar(
-                im, ax=ax, boundaries=boundaries, ticks=[0.10, 0.30, 0.50],
-                fraction=0.035, pad=0.02, extend="max"
-            )
-            cbar.set_label("Water Depth (m)", fontsize=16)
-            cbar.ax.tick_params(labelsize=14)
-        else:
-            ax.text(
-                0.5, 0.02, "No water depth ≥ 0.10 m in this sector",
-                ha="center", va="bottom", transform=ax.transAxes, fontsize=12,
-                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none")
-            )
-            if catchments is not None:
-                catchments.boundary.plot(ax=ax, edgecolor="black", linewidth=0.7,
-                                         zorder=3, label="Catchment Boundary")
-
-        ax.set_title(f"{location_name} ({rain_intensity}) - Max Water Depth",
-                     fontsize=18, fontweight="bold")
-        ax.set_xlabel("Easting (m)", fontsize=16)
-        ax.set_ylabel("Northing (m)", fontsize=16)
         if catchments is not None:
-            ax.legend(loc="upper right", fontsize=14)
+            catchments.boundary.plot(ax=ax, edgecolor="black", linewidth=0.7,
+                                     zorder=3, label="Catchment Boundary")
 
-        plot_filename = os.path.join(
-            plot_output_folder,
-            f"{os.path.splitext(os.path.basename(max_file))[0]}{'_zoom' if extent else ''}.png"
+        #cbar = plt.colorbar(
+            #im, ax=ax, boundaries=edges, ticks=edges,
+            #fraction=0.035, pad=0.02, extend="max"
+        #)
+        #cbar.set_label("Water Depth (m)", fontsize=14)
+    else:
+        ax.text(
+            0.5, 0.02, "No water depth ≥ 0.01 m in this sector",
+            ha="center", va="bottom", transform=ax.transAxes, fontsize=12,
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none")
         )
-        plt.savefig(plot_filename, dpi=300, bbox_inches="tight")
-        plt.close()
-        print(f"Plot saved: {plot_filename}")
 
-    except Exception as e:
-        print(f"Failed to process {max_file}: {e}")
+    # only title (no x/y labels)
+    ax.set_title(f"{location_name} ({rain_intensity}) — Max Water Depth",
+                 fontsize=18, fontweight="bold")
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.tick_params(labelbottom=False, labelleft=False)
 
+    out_path = os.path.join(
+        plot_output_folder,
+        f"{os.path.splitext(os.path.basename(max_file))[0]}{'_zoom' if extent else ''}.png"
+    )
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"Plot saved: {out_path}")
+    
+    
+    
+#################################################################################################
+###############################Plot without lake ##############################################
+############### zoomed #########################################################################
 
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import rasterio
+from rasterio.warp import reproject, Resampling
+from rasterio.windows import from_bounds
+from rasterio.features import geometry_mask
+from matplotlib.colors import ListedColormap, BoundaryNorm
+import geopandas as gpd
 
+def g_plot_maxwd_swissTLM_nocatchment_zoomed_nolake(
+    dem_file,
+    max_file,
+    plot_output_folder,
+    location_name,
+    rain_intensity,
+    use_catchments=False,
+    geo_ezgg_2km_ge=None,
+    extent=None,                # (xmin, xmax, ymin, ymax) in m (or km if 'auto')
+    extent_units="auto",        # "auto" | "m" | "km"
+    target_pixel_size=None,     # overlay render grid (m/px); None = DEM native
+    bg_layer="ch.swisstopo.swisstlm3d-karte-grau",
+    bg_pixel_size=1.0,
+    bg_max_px=4096,
+    bg_dpi=192,
+    lake_shapefile=None,
+    lake_name=None,
+    campground_shapefile=None,
+    campground_edgecolor="magenta",
+    campground_linewidth=2.0
+):
+    """
+    Plots max water depth on Swisstopo gray map.
+
+    Optional:
+    - lake_shapefile: path to polygon layer containing lakes
+    - lake_name: masks only the lake polygon whose 'gewaessername' matches this name
+    - campground_shapefile: plots campground polygon boundary on top
+
+    Logic:
+    - If lake_shapefile AND lake_name are provided -> only that lake is masked
+    - Otherwise -> no lake mask is applied, flood depths are plotted normally
+    """
+
+    os.makedirs(plot_output_folder, exist_ok=True)
+
+    def _extent_to_meters(ext, units):
+        if ext is None:
+            return None
+        xmin, xmax, ymin, ymax = ext
+        if units == "m":
+            return xmin, xmax, ymin, ymax
+        if units == "km":
+            return xmin * 1000.0, xmax * 1000.0, ymin * 1000.0, ymax * 1000.0
+        sample = max(abs(x) for x in (xmin, xmax, ymin, ymax))
+        return (
+            (xmin * 1000.0, xmax * 1000.0, ymin * 1000.0, ymax * 1000.0)
+            if sample < 10000 else
+            (xmin, xmax, ymin, ymax)
+        )
+
+    plot_extent = _extent_to_meters(extent, extent_units) if extent is not None else None
+
+    # --- DEM & plotting window ---
+    with rasterio.open(dem_file) as src_dem:
+        dem_crs = src_dem.crs
+        dem_nodata_value = src_dem.nodata if src_dem.nodata is not None else -9999
+
+        if plot_extent is not None:
+            xmin, xmax, ymin, ymax = plot_extent
+            dsb = src_dem.bounds
+
+            xmin_r = max(xmin, dsb.left)
+            xmax_r = min(xmax, dsb.right)
+            ymin_r = max(ymin, dsb.bottom)
+            ymax_r = min(ymax, dsb.top)
+
+            if xmin_r >= xmax_r or ymin_r >= ymax_r:
+                raise ValueError(
+                    f"Extent does not overlap DEM.\n"
+                    f"Requested extent: {(xmin, xmax, ymin, ymax)}\n"
+                    f"DEM bounds: {dsb}\n"
+                    f"Clipped extent: {(xmin_r, xmax_r, ymin_r, ymax_r)}"
+                )
+
+            win = from_bounds(xmin_r, ymin_r, xmax_r, ymax_r, transform=src_dem.transform)
+            dem_data = src_dem.read(1, window=win)
+            dem_transform = src_dem.window_transform(win)
+            plot_extent = (xmin_r, xmax_r, ymin_r, ymax_r)
+        else:
+            dem_data = src_dem.read(1)
+            dem_transform = src_dem.transform
+            b = src_dem.bounds
+            plot_extent = (b.left, b.right, b.bottom, b.top)
+
+        if target_pixel_size is not None and plot_extent is not None:
+            from rasterio.transform import from_origin
+
+            px = float(target_pixel_size)
+            xmin, xmax, ymin, ymax = plot_extent
+            width = int(np.ceil((xmax - xmin) / px))
+            height = int(np.ceil((ymax - ymin) / px))
+
+            dem_resampled = np.full((height, width), dem_nodata_value, dtype=dem_data.dtype)
+            dst_transform = from_origin(xmin, ymax, px, px)
+
+            reproject(
+                source=dem_data,
+                destination=dem_resampled,
+                src_transform=dem_transform,
+                src_crs=dem_crs,
+                dst_transform=dst_transform,
+                dst_crs=dem_crs,
+                resampling=Resampling.bilinear
+            )
+
+            dem_data = dem_resampled
+            dem_transform = dst_transform
+
+        dem_shape = dem_data.shape
+        mask = dem_data != dem_nodata_value
+
+    # --- Optional catchments ---
+    catchments = None
+    if use_catchments and geo_ezgg_2km_ge:
+        catchments = gpd.read_file(geo_ezgg_2km_ge).to_crs(dem_crs)
+
+    # --- Basemap ---
+    xmin, xmax, ymin, ymax = plot_extent
+    px_bg = float(bg_pixel_size) if bg_pixel_size is not None else abs(dem_transform.a)
+    bg_width = int(np.ceil((xmax - xmin) / px_bg))
+    bg_height = int(np.ceil((ymax - ymin) / px_bg))
+
+    basemap_img = get_swisstopo_background_image_zoomed(
+        xmin, xmax, ymin, ymax,
+        width=bg_width, height=bg_height,
+        layer=bg_layer,
+        max_px=bg_max_px,
+        dpi=bg_dpi
+    )
+
+    if basemap_img is None:
+        print("Failed to fetch Swisstopo WMS basemap.")
+        return
+
+    # --- Align max depth to render grid ---
+    with rasterio.open(max_file) as src_max:
+        max_data = src_max.read(1)
+        max_transform = src_max.transform
+        max_crs = src_max.crs
+
+    aligned_data = np.full(dem_shape, np.nan, dtype=np.float32)
+
+    reproject(
+        source=max_data,
+        destination=aligned_data,
+        src_transform=max_transform,
+        src_crs=max_crs if max_crs is not None else "EPSG:2056",
+        dst_transform=dem_transform,
+        dst_crs=dem_crs if dem_crs is not None else "EPSG:2056",
+        resampling=Resampling.nearest,
+    )
+
+    # >= 0.01 only; below is transparent
+    masked_data = np.where((mask & (aligned_data >= 0.01)), aligned_data, np.nan)
+
+    # --- Lake mask: apply ONLY if both lake_shapefile and lake_name are provided ---
+    if lake_shapefile is not None and lake_name is not None:
+        lakes = gpd.read_file(lake_shapefile).to_crs(dem_crs)
+
+        lake_name_field = "gewaessern"  # change this if your real field name is different
+
+        if lake_name_field not in lakes.columns:
+            print(f"Column '{lake_name_field}' not found in lake shapefile.")
+            print("Available columns:", lakes.columns.tolist())
+            print("No lake mask applied; plotting all flood depths normally.")
+        else:
+            name_series = lakes[lake_name_field].fillna("").astype(str).str.strip()
+            lakes = lakes[name_series.str.lower() == lake_name.strip().lower()]
+
+            # Keep only polygons intersecting current extent
+            lakes = lakes.cx[xmin:xmax, ymin:ymax]
+
+            if not lakes.empty:
+                lake_mask = geometry_mask(
+                    geometries=lakes.geometry,
+                    transform=dem_transform,
+                    invert=True,
+                    out_shape=dem_shape
+                )
+                masked_data[lake_mask] = np.nan
+                print(f"Lake mask applied for lake_name={lake_name!r}")
+            else:
+                print(f"No matching lake polygon found for lake_name={lake_name!r} in plot extent.")
+                print("No lake mask applied; plotting all flood depths normally.")
+    else:
+        print("No lake_name provided; plotting all flood depths normally.")
+
+    has_depth = np.isfinite(masked_data).any()
+
+    # --- Fixed palette & ticks ---
+    edges = [0.01, 0.10, 0.30, 0.50, 1.0, 1.50, 2.0]
+    colors = ["#f7fcf0", "#ccebc5", "#a8ddb5", "#7bccc4", "#43a2ca", "#0868ac"]
+    cmap_disc = ListedColormap(colors + ["#023858"])
+    cmap_disc.set_under((0, 0, 0, 0))
+    norm = BoundaryNorm(edges, cmap_disc.N, clip=False)
+
+    # --- Figure ---
+    xspan = xmax - xmin
+    yspan = ymax - ymin
+    base_width = 12.0
+    fig, ax = plt.subplots(figsize=(base_width, base_width * (yspan / xspan)))
+
+    ax.imshow(basemap_img, extent=plot_extent, interpolation="nearest", zorder=0)
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    ax.set_aspect("equal", adjustable="box")
+
+    if has_depth:
+        ax.imshow(
+            masked_data,
+            cmap=cmap_disc,
+            norm=norm,
+            extent=plot_extent,
+            interpolation="none",
+            zorder=2
+        )
+
+    if catchments is not None and not catchments.empty:
+        catchments.boundary.plot(
+            ax=ax,
+            edgecolor="black",
+            linewidth=0.7,
+            zorder=3,
+            label="Catchment Boundary"
+        )
+
+    # --- Campground polygon on top ---
+    if campground_shapefile is not None:
+        campground = gpd.read_file(campground_shapefile).to_crs(dem_crs)
+        campground = campground.cx[xmin:xmax, ymin:ymax]
+
+        if not campground.empty:
+            campground.boundary.plot(
+                ax=ax,
+                edgecolor=campground_edgecolor,
+                linewidth=campground_linewidth,
+                zorder=4
+            )
+
+    if not has_depth:
+        ax.text(
+            0.5, 0.02, "No water depth ≥ 0.01 m in this sector",
+            ha="center",
+            va="bottom",
+            transform=ax.transAxes,
+            fontsize=12,
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none")
+        )
+
+    ax.set_title(
+        f"{location_name} ({rain_intensity}) — Max Water Depth",
+        fontsize=18,
+        fontweight="bold"
+    )
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.tick_params(labelbottom=False, labelleft=False)
+
+    out_path = os.path.join(
+        plot_output_folder,
+        f"{os.path.splitext(os.path.basename(max_file))[0]}{'_zoom' if extent else ''}.png"
+    )
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"Plot saved: {out_path}")
+    
 ###############################################################################################
 #################### 4 classes for the water depth ############################################
 

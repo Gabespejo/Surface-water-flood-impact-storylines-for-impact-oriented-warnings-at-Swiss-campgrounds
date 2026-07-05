@@ -6,7 +6,7 @@ import sys
 
 # make sure we can import your plotting function
 sys.path.insert(0, "/storage/homefs/ge24z347/Campgrounds/src")
-from flow_depth_plotting import g_plot_maxwd_swissTLM_nocatchment_zoomed
+from flow_depth_plotting import g_plot_maxwd_swissTLM_nocatchment_zoomed_nolake
 
 
 def parse_extent(extent_str: str):
@@ -37,9 +37,21 @@ def main():
 
     # Optional overlays
     parser.add_argument("--use-catchments", action="store_true", help="Enable catchment overlay")
-    parser.add_argument("--geo-shape", default=None, help="Path to shapefile for overlay (required if --use-catchments)")
+    parser.add_argument("--geo-shape", default=None, help="Path to shapefile for catchment overlay (required if --use-catchments)")
 
-    # NEW: Zoom controls
+    # Lake + campground
+    parser.add_argument("--lake-shape", default=None,
+                        help="Path to lake shapefile/polygon layer.")
+    parser.add_argument("--lake-name", default=None,
+                        help="Lake name in field 'gewaessername', e.g. 'Léman'")
+    parser.add_argument("--campground-shape", default=None,
+                        help="Path to campground shapefile/polygon layer to highlight.")
+    parser.add_argument("--campground-edgecolor", default="magenta",
+                        help="Boundary color for campground polygon (default: magenta)")
+    parser.add_argument("--campground-linewidth", type=float, default=2.0,
+                        help="Line width for campground polygon boundary (default: 2.0)")
+
+    # Zoom controls
     parser.add_argument("--extent", default=None,
                         help='Zoom bbox "xmin,xmax,ymin,ymax" in meters (or km if --extent-units=km). '
                              "If provided, filenames include _zoom (handled by the plotter).")
@@ -48,25 +60,29 @@ def main():
     parser.add_argument("--also-full", action="store_true",
                         help="If set with --extent, also render a full-extent map for each scenario.")
 
-    # Render quality (overlay & basemap passthrough to the plotting function)
+    # Render quality
     parser.add_argument("--target-pixel-size", type=float, default=None,
                         help="Overlay render grid (m/px). If omitted, uses DEM native res.")
     parser.add_argument("--bg-layer", default="ch.swisstopo.swisstlm3d-karte-grau",
                         help="Swisstopo WMS layer (default: ch.swisstopo.swisstlm3d-karte-grau).")
     parser.add_argument("--bg-pixel-size", type=float, default=1.0,
-                        help="Basemap pixel size (m/px). 0.5–2.0 is a good range; "
-                             "very small values can be huge/slow and alter label styling.")
+                        help="Basemap pixel size (m/px). 0.5–2.0 is a good range.")
     parser.add_argument("--bg-dpi", type=int, default=96,
-                        help="WMS DPI hint (96/192/256). Higher can render labels crisper but change styling.")
+                        help="WMS DPI hint (96/192/256).")
     parser.add_argument("--bg-max-px", type=int, default=4096,
-                        help="Per-tile max pixels for WMS requests (tiling used above this).")
+                        help="Per-tile max pixels for WMS requests.")
 
-    
     args = parser.parse_args()
 
     # Validate catchments
     if args.use_catchments and not args.geo_shape:
         parser.error("--use-catchments set but --geo-shape not provided.")
+
+    if args.lake_shape and not os.path.exists(args.lake_shape):
+        parser.error(f"--lake-shape not found: {args.lake_shape}")
+
+    if args.campground_shape and not os.path.exists(args.campground_shape):
+        parser.error(f"--campground-shape not found: {args.campground_shape}")
 
     # Clean version string to avoid double underscores
     version_clean = args.version.strip("_")
@@ -79,6 +95,9 @@ def main():
     dem_file = f"/storage/homefs/ge24z347/LISFLOOD_FP_8_1/build/{base_name}/{base_name}.dem"
     simulation_base = "/storage/homefs/ge24z347/LISFLOOD_FP_8_1/build"
     os.makedirs(args.output_folder, exist_ok=True)
+
+    if not os.path.exists(dem_file):
+        parser.error(f"DEM file not found: {dem_file}")
 
     # Parse extent if provided
     zoom_extent = parse_extent(args.extent) if args.extent else None
@@ -94,14 +113,14 @@ def main():
         )
 
         if not os.path.exists(max_file):
-            print(f"  Missing: {max_file} — skipping.")
+            print(f"Missing: {max_file} — skipping.")
             continue
 
-        print(f" Plotting {rain} mm/h...")
+        print(f"Plotting {rain} mm/h...")
 
-        # If user gave an extent: render zoomed (plotter adds '_zoom' in filename)
+        # Zoomed map
         if zoom_extent is not None:
-            g_plot_maxwd_swissTLM_nocatchment_zoomed(
+            g_plot_maxwd_swissTLM_nocatchment_zoomed_nolake(
                 dem_file=dem_file,
                 max_file=max_file,
                 plot_output_folder=args.output_folder,
@@ -116,11 +135,15 @@ def main():
                 bg_pixel_size=args.bg_pixel_size,
                 bg_max_px=args.bg_max_px,
                 bg_dpi=args.bg_dpi,
+                lake_shapefile=args.lake_shape,
+                lake_name=args.lake_name,
+                campground_shapefile=args.campground_shape,
+                campground_edgecolor=args.campground_edgecolor,
+                campground_linewidth=args.campground_linewidth,
             )
 
-            # Optionally also render full-extent map
             if args.also_full:
-                g_plot_maxwd_swissTLM_nocatchment_zoomed(
+                g_plot_maxwd_swissTLM_nocatchment_zoomed_nolake(
                     dem_file=dem_file,
                     max_file=max_file,
                     plot_output_folder=args.output_folder,
@@ -128,16 +151,21 @@ def main():
                     rain_intensity=f"{rain} mm/h",
                     use_catchments=args.use_catchments,
                     geo_ezgg_2km_ge=args.geo_shape,
-                    extent=None,  # full DEM
+                    extent=None,
                     target_pixel_size=args.target_pixel_size,
                     bg_layer=args.bg_layer,
                     bg_pixel_size=args.bg_pixel_size,
                     bg_max_px=args.bg_max_px,
                     bg_dpi=args.bg_dpi,
+                    lake_shapefile=args.lake_shape,
+                    lake_name=args.lake_name,
+                    campground_shapefile=args.campground_shape,
+                    campground_edgecolor=args.campground_edgecolor,
+                    campground_linewidth=args.campground_linewidth,
                 )
+
         else:
-            # No extent provided: render full-extent only
-            g_plot_maxwd_swissTLM_nocatchment_zoomed(
+            g_plot_maxwd_swissTLM_nocatchment_zoomed_nolake(
                 dem_file=dem_file,
                 max_file=max_file,
                 plot_output_folder=args.output_folder,
@@ -145,15 +173,20 @@ def main():
                 rain_intensity=f"{rain} mm/h",
                 use_catchments=args.use_catchments,
                 geo_ezgg_2km_ge=args.geo_shape,
-                extent=None,  # full DEM
+                extent=None,
                 target_pixel_size=args.target_pixel_size,
                 bg_layer=args.bg_layer,
                 bg_pixel_size=args.bg_pixel_size,
                 bg_max_px=args.bg_max_px,
                 bg_dpi=args.bg_dpi,
+                lake_shapefile=args.lake_shape,
+                lake_name=args.lake_name,
+                campground_shapefile=args.campground_shape,
+                campground_edgecolor=args.campground_edgecolor,
+                campground_linewidth=args.campground_linewidth,
             )
 
-    print(f"\n All plots saved in: {args.output_folder}")
+    print(f"\nAll plots saved in: {args.output_folder}")
 
 
 if __name__ == "__main__":

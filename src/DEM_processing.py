@@ -2064,7 +2064,7 @@ def create_par_file_75min(base_name, total_precipitation, output_file_path):
 ##############################################################################
 
 
-def create_par_file_60min_bci(base_name, total_precipitation, output_file_path):
+def create_par_file_60min_bci(base_name, total_precipitation,cfl, output_file_path):
     """
     Creates a .par file for LISFLOOD-FP simulation using given base name and total precipitation.
     It updates 'dynamicrainfile', 'dirroot', and 'resroot' to include the precipitation value.
@@ -2089,6 +2089,9 @@ def create_par_file_60min_bci(base_name, total_precipitation, output_file_path):
         "initial_tstep": "1.0",
         "saveint": "300.0",
         "massint": "1.0",
+        "cfl":     str(cfl),    # <-- now uses the parameter
+        "qoutput":         "",
+        "voutput":         "",
         "netcdf_out": ""
     }
 
@@ -2102,7 +2105,7 @@ def create_par_file_60min_bci(base_name, total_precipitation, output_file_path):
         print(f" Error writing .par file: {e}")
 ##############################################################################
 
-def create_par_file_75min_bci(base_name, total_precipitation, output_file_path):
+def create_par_file_75min_bci(base_name, total_precipitation,cfl, output_file_path):
     """
     Creates a .par file for LISFLOOD-FP simulation using given base name and total precipitation.
     It updates 'dynamicrainfile', 'dirroot', and 'resroot' to include the precipitation value.
@@ -2127,6 +2130,9 @@ def create_par_file_75min_bci(base_name, total_precipitation, output_file_path):
         "initial_tstep": "1.0",
         "saveint": "300.0",
         "massint": "1.0",
+        "cfl":     str(cfl),    # <-- now uses the parameter
+        "qoutput":         "",
+        "voutput":         "",
         "netcdf_out": ""
     }
 

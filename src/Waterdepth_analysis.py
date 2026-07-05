@@ -114,6 +114,119 @@ def calculate_flooded_area_by_scenarios_fv1(
 
 ##########################################################################################
 
+def plot_flooded_area_two_versions(
+    df_v2,
+    df_v4,
+    case_name=None,  # kept for compatibility, not used
+    label_v2="S1",
+    label_v4="S2",
+    output_path=None,
+    show=True,
+    dpi=300,
+):
+    """
+    Two-version flooded area plot (clean, paper-ready):
+      - Transparent background
+      - No title
+      - No grid
+      - Colors matching your stacked-bar palette (light teal / dark teal)
+    Expects columns:
+      - 'Precipitation (mm/h)'
+      - 'Flooded Area (%)'
+    """
+
+    import os
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    # --- Colors chosen to match your figure palette ---
+    c_v2 = "#dff2f1"   # light teal
+    c_v4 = "#00796b"   # dark teal
+
+    # Align on precipitation so both curves share the same x-axis points
+    a = df_v2[["Precipitation (mm/h)", "Flooded Area (%)"]].rename(
+        columns={"Flooded Area (%)": "v2"}
+    ).copy()
+
+    b = df_v4[["Precipitation (mm/h)", "Flooded Area (%)"]].rename(
+        columns={"Flooded Area (%)": "v4"}
+    ).copy()
+
+    m = pd.merge(a, b, on="Precipitation (mm/h)", how="inner").sort_values(
+        "Precipitation (mm/h)"
+    )
+
+    if m.empty:
+        raise ValueError("No matching precipitation values between v2 and v4 CSVs.")
+
+    x = m["Precipitation (mm/h)"].values
+    y2 = m["v2"].values
+    y4 = m["v4"].values
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Transparent backgrounds
+    fig.patch.set_alpha(0.0)
+    ax.set_facecolor((1, 1, 1, 0))
+
+    # Lines
+    ax.plot(
+        x, y2,
+        marker="s",
+        linewidth=2,
+        markersize=6,
+        color=c_v2,
+        markerfacecolor=c_v2,
+        markeredgecolor=c_v2,
+        label=label_v2
+    )
+
+    ax.plot(
+        x, y4,
+        marker="s",
+        linewidth=2,
+        markersize=6,
+        color=c_v4,
+        markerfacecolor=c_v4,
+        markeredgecolor=c_v4,
+        label=label_v4
+    )
+
+    # Optional shaded gap
+    ax.fill_between(x, y2, y4, alpha=0.12, color=c_v4, label="Δ")
+
+    # Labels only (no title)
+    ax.set_xlabel("precipitation (mm/h)")
+    ax.set_ylabel("Flooded Area (%)")
+
+    # No grid
+    ax.grid(False)
+
+    # --- CLEANER AXIS STYLE ---
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # ⭐ BIGGER TICKS (your requested change)
+    ax.tick_params(axis="both", labelsize=14, length=4, width=1)
+
+    # Legend
+    ax.legend(frameon=False, loc="best")
+
+    plt.tight_layout()
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        fig.savefig(output_path, dpi=dpi, transparent=True)
+        if not show:
+            plt.close(fig)
+
+    if show:
+        plt.show()
+
+    return m
+
+####################################################################################################
+
 def plot_flooded_area_fv1(df_flooded, case_name, output_folder=None):
     """
     Plot flooded area percentage vs precipitation for FV1 solver and optionally save the plot.
@@ -153,3 +266,5 @@ def plot_flooded_area_fv1(df_flooded, case_name, output_folder=None):
         plt.close()
     else:
         plt.show()
+        
+#################################################################################################

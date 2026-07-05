@@ -412,6 +412,46 @@ def create_precip_automatic_camp_v2(base_name, dem_file_path, buffer_start, buff
 
         print(f"Created NetCDF: {nc_path}")
 
+#####################################################################################################
+
+import os
+from DEM_processing import precipitation_netcdf
+
+def create_precip_automatic_camp_v2_infiltration(base_name, dem_file_path, buffer_start, buffer_end, buffer_step, output_dir):
+    """
+    Generate NetCDF files for different precipitation intensities based on a single DEM file.
+    Adds 15 minutes dry tail to the rainfall distribution at the end.
+    Applies a factor of 0.8 to account for infiltration assumption.
+    Saves output to the given directory.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Factor to reduce precipitation due to assumed infiltration
+    infiltration_factor = 0.8
+
+    # Frequency in mm/h per 5-minute step
+    frequency_core = [0.0, 9.30, 17.81, 18.70, 14.37, 11.13, 7.43, 5.28, 4.47, 3.41, 3.01, 2.68, 2.41]
+
+    # Build full frequency distribution: 60 min rainfall + 15 min dry tail
+    frequency_per_hour = frequency_core + [0.0, 0.0, 0.0]
+
+    # Apply infiltration factor
+    frequency_per_hour = [value * infiltration_factor for value in frequency_per_hour]
+
+    for total_precipitation in range(buffer_start, buffer_end + 1, buffer_step):
+        print(f"Creating NetCDF for {base_name} with total precipitation = {total_precipitation} mm")
+
+        nc_path = os.path.join(output_dir, f"{base_name}_{total_precipitation}.nc")
+
+        precipitation_netcdf(
+            dem_file_path,
+            total_precipitation,
+            nc_path,
+            frequency_per_hour
+        )
+
+        print(f"Created NetCDF: {nc_path}")
+
 
 #####################################################################################################
 

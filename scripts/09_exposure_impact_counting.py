@@ -54,12 +54,6 @@ def max_depth_within_buffer(src, x, y, r_m=3.0):
     return float(np.nanmax(vals))
 
 # ---------- classification: MOBILE vs NON_MOBILE ----------
-# Returns tuples (group, level):
-#   mobile:      ("mobile", 1) if 0.10 <= depth < 0.30
-#                ("mobile", 2) if depth >= 0.30
-#   non_mobile:  ("non_mobile", 1) if 0.10 <= depth < rental_threshold
-#                ("non_mobile", 2) if depth >= rental_threshold
-#   None otherwise (not affected / class not in interest)
 def classify_depth_simple(depth_m, cls_name, rental_threshold):
     if np.isnan(depth_m) or cls_name is None:
         return None
@@ -110,10 +104,9 @@ def overlay_one_scenario(points_path, class_field, raster_path, buffer_m, force_
                            for g in pts.geometry], dtype=float)
 
     labels = [classify_depth_simple(d, c, rental_threshold) for d, c in zip(depths, classes.values)]
-    # keep impacted only
     mask = [lab is not None for lab in labels]
     classes = classes[mask].reset_index(drop=True)
-    depths  = depths [mask]
+    depths  = depths[mask]
     gl = [lab for lab in labels if lab is not None]
 
     if len(gl) == 0:
@@ -136,14 +129,19 @@ def overlay_one_scenario(points_path, class_field, raster_path, buffer_m, force_
 
     return df, counts
 
-def find_raster(build_dir, basename, duration, q):
-    """Try common layout variants inside build_dir for a given scenario q."""
+def find_raster(build_dir, basename, duration, q, run_type):
+    """
+    Find raster based on selected run type folder name:
+      e.g. acc-gpu or fv1-gpu
+    """
     build_dir = Path(build_dir)
     candidates = [
-        build_dir / f"{basename}_{q}_fv1-gpu" / f"{basename}_{duration}_{q}.max",
+        build_dir / f"{basename}_{q}_{run_type}" / f"{basename}_{duration}_{q}.max",
+        build_dir / f"{basename}_{q}_{run_type}" / f"{basename}_{q}.max",
+
+        # allow flat structure (no type folder)
         build_dir / f"{basename}_{duration}_{q}.max",
         build_dir / f"{basename}_{q}.max",
-        build_dir / f"{basename}_{q}_fv1-gpu" / f"{basename}_{q}.max",
     ]
     for p in candidates:
         if p.exists():
@@ -218,16 +216,12 @@ def build_fractions_tables(counts_long: pd.DataFrame,
                 "fraction": float(v) if pd.notna(v) else np.nan
             })
 
-    # Mobile (L1: 0.10–0.30 ; L2: >=0.30)
     add_long_if_any("mobile", 1, inv_mobile)
     add_long_if_any("mobile", 2, inv_mobile)
-
-    # Non-mobile (L1: 0.10–<thr ; L2: >=thr)
     add_long_if_any("non_mobile", 1, inv_non_mobile)
     add_long_if_any("non_mobile", 2, inv_non_mobile)
 
     frac_long = pd.DataFrame(rows)
-
     if frac_long.empty:
         return frac_long, pd.DataFrame()
 
@@ -245,10 +239,13 @@ def build_fractions_tables(counts_long: pd.DataFrame,
 
 def run_many_scenarios(points_path, class_field, build_dir, basename, duration,
                        start, end, step, buffer_m, force_points_crs,
-                       outdir, rental_threshold, version_label, debug_first=False):
+                       outdir, rental_threshold, version_label, run_type, debug_first=False):
 
-    outdir = Path(outdir); outdir.mkdir(parents=True, exist_ok=True)
-    all_counts = []; found_any = False
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    all_counts = []
+    found_any = False
 
     # Inventory totals once (for denominators)
     inv_mobile, inv_non_mobile = compute_inventory_totals(
@@ -256,12 +253,9 @@ def run_many_scenarios(points_path, class_field, build_dir, basename, duration,
     )
     print(f"[INFO] Inventory totals — mobile:{inv_mobile} non_mobile:{inv_non_mobile}")
 
-    totals_dict = {
-        "mobile_total": inv_mobile,
-        "non_mobile_total": inv_non_mobile,
-    }
+    totals_dict = {"mobile_total": inv_mobile, "non_mobile_total": inv_non_mobile}
 
-    # remember which groups actually exist in the site
+    # which groups exist
     valid_groups = set()
     if inv_mobile > 0:
         valid_groups.add("mobile")
@@ -271,18 +265,21 @@ def run_many_scenarios(points_path, class_field, build_dir, basename, duration,
     scenarios_seen = []
 
     for q in range(start, end + 1, step):
-        raster = find_raster(build_dir, basename, duration, q)
+        raster = find_raster(build_dir, basename, duration, q, run_type)
         if raster is None:
-            print(f"[WARN] Missing raster: {basename} {duration} {q} under {build_dir}")
+            print(f"[WARN] Missing raster: {basename} {duration} {q} ({run_type}) under {build_dir}")
             continue
+
         found_any = True
         scenarios_seen.append(q)
         print(f"[INFO] Scenario {q}: {raster}")
 
-        df_imp, counts = overlay_one_scenario(points_path, class_field, str(raster),
-                                              buffer_m=buffer_m,
-                                              force_points_crs=force_points_crs,
-                                              rental_threshold=rental_threshold)
+        df_imp, counts = overlay_one_scenario(
+            points_path, class_field, str(raster),
+            buffer_m=buffer_m,
+            force_points_crs=force_points_crs,
+            rental_threshold=rental_threshold
+        )
         counts["scenario"] = q
         all_counts.append(counts)
 
@@ -301,7 +298,7 @@ def run_many_scenarios(points_path, class_field, build_dir, basename, duration,
             debug_first = False
 
     if not found_any:
-        print("[ERR] No scenarios found. Check --build-dir, --duration and naming.")
+        print("[ERR] No scenarios found. Check --build-dir, --duration, --basename, and --type.")
         return
 
     scenarios_all = sorted(set(scenarios_seen))
@@ -333,24 +330,20 @@ def run_many_scenarios(points_path, class_field, build_dir, basename, duration,
 
     counts_long = pd.concat(all_counts, ignore_index=True)
 
-    # drop groups with zero inventory, if any
     if not valid_groups:
         print("[WARN] No valid groups in inventory — nothing to save.")
         return
     counts_long = counts_long[counts_long["group"].isin(valid_groups)].copy()
 
-    # Pivot for impacted counts by group/level per scenario
     counts_pivot = (counts_long
         .pivot_table(index=["scenario","group","level"], values="count",
                      aggfunc="sum", fill_value=0)
         .reset_index()
         .sort_values(["scenario","group","level"]))
 
-    # Save CSVs with totals side columns
     add_side_totals(counts_long, totals_dict).to_csv(outdir / "counts_long.csv", index=False)
     add_side_totals(counts_pivot, totals_dict).to_csv(outdir / "counts_pivot.csv", index=False)
 
-    # Excel bundle
     xlsx = outdir / f"{basename}_exposure.xlsx"
     try:
         with pd.ExcelWriter(xlsx, engine="openpyxl") as xw:
@@ -361,7 +354,6 @@ def run_many_scenarios(points_path, class_field, build_dir, basename, duration,
     except Exception as e:
         print(f"[INFO] Excel not written ({e}). CSVs saved in {outdir}")
 
-    # Fractions (long & wide)
     if not version_label:
         version_label = infer_version_label(str(basename))
 
@@ -389,7 +381,7 @@ def parse_args():
     )
     p.add_argument("--points", required=True, help="Path to exposure points (SHP/GPKG).")
     p.add_argument("--class-field", default="type", help="Attribute with class labels (default: type).")
-    p.add_argument("--build-dir", required=True, help="Path to the build directory (e.g. .../build/Sempach_2m_v4).")
+    p.add_argument("--build-dir", required=True, help="Path to the build directory (e.g. .../build/Morges_2m_v4).")
     p.add_argument("--basename", help="Basename in filenames (default: inferred from build-dir name).")
     p.add_argument("--duration", required=True, help="Duration token in filenames (e.g. 75min or 60min).")
     p.add_argument("--start", type=int, default=10)
@@ -402,7 +394,10 @@ def parse_args():
     p.add_argument("--rental-threshold", type=float, default=1.0,
                    help="Threshold (m) to split non_mobile levels (default 1.0).")
     p.add_argument("--version-label", default="",
-                   help="Optional label for fractions rows (e.g., v2, v4, v5, v6). If omitted, inferred from basename.")
+                   help="Optional label for fractions rows (e.g., v2, v4, v5, v6).")
+    # NEW: run type
+    p.add_argument("--type", default="fv1-gpu",
+                   help="Run type folder name to use (e.g., fv1-gpu or acc-gpu). Default: fv1-gpu.")
     p.add_argument("--debug-first", action="store_true",
                    help="Write a GPKG of impacted points for the first processed scenario.")
     return p.parse_args()
@@ -410,7 +405,7 @@ def parse_args():
 def main():
     a = parse_args()
     build_dir = Path(a.build_dir)
-    basename = a.basename or build_dir.name  # e.g. 'Morges_2m_v6'
+    basename = a.basename or build_dir.name  # e.g. 'Morges_2m_v4'
 
     run_many_scenarios(
         points_path=a.points,
@@ -424,6 +419,7 @@ def main():
         outdir=a.outdir,
         rental_threshold=a.rental_threshold,
         version_label=a.version_label,
+        run_type=a.type,
         debug_first=a.debug_first,
     )
 

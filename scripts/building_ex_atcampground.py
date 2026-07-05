@@ -298,6 +298,7 @@ def main():
     p.add_argument("--summary-out", required=True, help="CSV for per-camp (and class) summaries.")
     p.add_argument("--plot-heatmaps", action="store_true", help="If set, export heatmaps per campground.")
     p.add_argument("--plots-outdir", default=None, help="Folder to save heatmaps (required if --plot-heatmaps).")
+    p.add_argument("--plot-out",dest="plot_out",default=None,help="Full path including filename where plot will be saved.")
     args = p.parse_args()
 
     start = datetime.datetime.now()

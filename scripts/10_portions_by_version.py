@@ -179,7 +179,14 @@ def apply_custom_colors(color_list_str: str):
         COLORS[key] = rgba[i % len(rgba)]
 
 # -------- Plotting --------
-def stacked_bars_for_version(df_pct: pd.DataFrame, version: str, outdir: Path, title_prefix: str, transparent: bool):
+def stacked_bars_for_version(
+    df_pct: pd.DataFrame,
+    version: str,
+    outdir: Path,
+    title_prefix: str,
+    transparent: bool,
+    tick_color: str = "black",
+):
     """Make one stacked bar figure for a single version."""
     sub = df_pct[df_pct["version"] == version].copy()
     if sub.empty:
@@ -215,19 +222,18 @@ def stacked_bars_for_version(df_pct: pd.DataFrame, version: str, outdir: Path, t
         bottom += y
 
     ax.set_xticks(x)
-    ax.set_xticklabels([str(s) for s in scenarios])  # labels themselves
-    # ↑ keep those, then bump tick label size:
+    ax.set_xticklabels([str(s) for s in scenarios])
+
+    # tick sizes + color
     tick_fs = 18
-    ax.tick_params(axis="x", which="both", labelsize=tick_fs)
-    ax.tick_params(axis="y", which="both", labelsize=tick_fs)
-    #ax.set_xlabel("Scenario (mm/h)", fontsize=18)
-    #ax.set_ylabel("(%) of impact - camping pitches ", fontsize=18)
-    #ax.set_title(f"{title_prefix} — {pretty_version_for_title(version)} (%) distribution of impact classes", fontsize=18)
+    ax.tick_params(axis="x", which="both", labelsize=tick_fs, colors=tick_color)
+    ax.tick_params(axis="y", which="both", labelsize=tick_fs, colors=tick_color)
 
-    # 🔹 increase tick label sizes
-    ax.tick_params(axis="both", which="major", labelsize=18)
+    # color the axis spines to match
+    for spine in ax.spines.values():
+        spine.set_color(tick_color)
 
-    # 🔹 bigger legend text
+    # legend
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=18)
 
     ax.margins(x=0.01)
@@ -254,6 +260,8 @@ def main():
                          "(mapped in order to: mobile1, mobile2, non_mobile1, non_mobile2).")
     ap.add_argument("--transparent", action="store_true",
                     help="If set, saves PNGs with transparent background instead of white.")
+    ap.add_argument("--tick-color", choices=["white", "black"], default="black",
+                    help="Color for tick labels and axis spines.")
     args = ap.parse_args()
 
     if not args.fractions_long:
@@ -284,7 +292,11 @@ def main():
     df_pct = build_percentage_of_total(frac_long, totals)
 
     for v in sorted(df_pct["version"].unique()):
-        stacked_bars_for_version(df_pct, v, outdir, args.title_prefix, transparent=args.transparent)
+        stacked_bars_for_version(
+            df_pct, v, outdir, args.title_prefix,
+            transparent=args.transparent,
+            tick_color=args.tick_color
+        )
 
 if __name__ == "__main__":
     main()
